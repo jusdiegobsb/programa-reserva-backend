@@ -4,61 +4,46 @@ const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
 
-// Permite chamadas de qualquer origem (Snack, celular, etc.)
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 
-// Health check
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', app: 'Programa Reserva 4.0 - Backend' });
+  res.json({ status: 'ok', app: 'Programa Reserva 4.0 - Backend Gemini' });
 });
 
-// Proxy para a API do Claude
+const PROMPT = `Extraia dados de uma reserva do Airbnb do conteúdo fornecido.
+Responda SOMENTE com JSON válido, sem markdown, sem texto adicional.
+{"nome":"nome completo do hóspede ou null","genero":"M para masculino, F para feminino, ou null","quantidade":número inteiro de hóspedes,"dataEntrada":"YYYY-MM-DD ou null","dataSaida":"YYYY-MM-DD ou null"}
+Regras: datas por extenso em português converta para YYYY-MM-DD. Ano de referência: 2025 ou 2026. Gênero pelo nome.`;
+
 app.post('/claude', async (req, res) => {
-  if (!CLAUDE_API_KEY) {
-    return res.status(500).json({ error: 'CLAUDE_API_KEY não configurada no servidor.' });
+  if (!GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY não configurada.' });
   }
 
   try {
-    const { content, type } = req.body;
+    const { type, base64, mime, prompt, content } = req.body;
 
-    // Monta o conteúdo da mensagem
-    let messageContent;
+    let parts = [];
 
-    if (type === 'image') {
-      // Recebe { base64, mime, prompt }
-      messageContent = [
-        {
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: req.body.mime || 'image/jpeg',
-            data: req.body.base64,
-          },
-        },
-        {
-          type: 'text',
-          text: req.body.prompt || PROMPT_DEFAULT,
-        },
+    if (type === 'image' && base64) {
+      parts = [
+        { inline_data: { mime_type: mime || 'image/jpeg', data: base64 } },
+        { text: PROMPT }
       ];
     } else {
-      // Texto puro
-      messageContent = content;
+      parts = [{ text: PROMPT + '\n\nTexto da reserva:\n' + content }];
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': CLAUDE_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 500,
-        messages: [{ role: 'user', content: messageContent }],
+        contents: [{ parts }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 500 }
       }),
     });
 
@@ -68,30 +53,22 @@ app.post('/claude', async (req, res) => {
       return res.status(400).json({ error: data.error.message });
     }
 
-    const text = data.content
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('');
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const clean = text.replace(/```json|```/g, '').trim();
 
-    // Tenta parsear JSON da resposta
     try {
-      const clean = text.replace(/```json|```/g, '').trim();
       const parsed = JSON.parse(clean);
       res.json({ success: true, result: parsed });
     } catch {
-      res.json({ success: true, result: null, raw: text });
+      res.status(500).json({ error: 'Resposta inválida da IA: ' + text });
     }
 
   } catch (err) {
     console.error('Erro:', err.message);
-    res.status(500).json({ error: 'Erro ao chamar a API do Claude: ' + err.message });
+    res.status(500).json({ error: 'Erro interno: ' + err.message });
   }
 });
 
-const PROMPT_DEFAULT = `Extraia dados de reserva Airbnb. JSON somente, sem markdown.
-{"nome":"nome ou null","genero":"M ou F ou null","quantidade":número,"dataEntrada":"YYYY-MM-DD ou null","dataSaida":"YYYY-MM-DD ou null"}
-Datas por extenso → YYYY-MM-DD. Ano: 2025 ou 2026. Gênero pelo nome.`;
-
 app.listen(PORT, () => {
-  console.log(`✅ Servidor rodando na porta ${PORT}`);
+  console.log(`✅ Servidor Gemini rodando na porta ${PORT}`);
 });
